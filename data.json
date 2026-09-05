@@ -1,0 +1,14 @@
+{
+  "settings": {
+    "site_name": "Javier Proyect"
+  },
+  "users": [
+    {
+      "id": 1,
+      "username": "Ale2007a",
+      "password": "$2a$12$St0MBpxkxhNbKij3mQhWDOwj/YK1pqIQ0kTbeWfLuU.u.RfUFmGyW",
+      "role": "admin"
+    }
+  ],
+  "projects": []
+}
