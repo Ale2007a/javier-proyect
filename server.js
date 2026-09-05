@@ -1,783 +1,1158 @@
-const express=require('express');
-const session=require('express-session');
-const bcrypt=require('bcryptjs');
-const multer=require('multer');
-const path=require('path');
-const fs=require('fs');
+const express = require('express');
+const session = require('express-session');
+const bcrypt = require('bcryptjs');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
-const app=express();
-const PORT=process.env.PORT||3000;
-const ROOT=__dirname;
-const DB_FILE=path.join(ROOT,'data.json');
-const UPLOADS=path.join(ROOT,'uploads');
+const app = express();
 
-fs.mkdirSync(UPLOADS,{recursive:true});
+const PORT = process.env.PORT || 3000;
+const ROOT = __dirname;
+const DB_FILE = path.join(ROOT, 'data.json');
+const UPLOADS = path.join(ROOT, 'uploads');
 
-function save(){
-  fs.writeFileSync(DB_FILE,JSON.stringify(db,null,2));
+fs.mkdirSync(UPLOADS, { recursive: true });
+
+/* =========================
+   BASE DE DATOS
+========================= */
+
+function save() {
+  fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
 }
 
-function esc(s=''){
-  return String(s).replace(/[&<>"']/g,c=>({
-    '&':'&amp;',
-    '<':'&lt;',
-    '>':'&gt;',
-    '"':'&quot;',
-    "'":'&#39;'
+function esc(s = '') {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
   }[c]));
 }
 
 let db;
 
-if(fs.existsSync(DB_FILE)){
-  db=JSON.parse(fs.readFileSync(DB_FILE));
-}else{
-  db={
-    settings:{
-      site_name:'Javier Proyect'
+if (fs.existsSync(DB_FILE)) {
+  try {
+    db = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+  } catch (error) {
+    console.error('Error leyendo data.json:', error);
+    process.exit(1);
+  }
+} else {
+  db = {
+    settings: {
+      site_name: 'Javier Proyect'
     },
-    users:[],
-    projects:[]
+    users: [],
+    projects: []
   };
 
   db.users.push({
-    id:1,
-    username:'Ale2007a',
-    password:bcrypt.hashSync('Ale2007',12),
-    role:'admin'
+    id: 1,
+    username: 'Ale2007a',
+    password: bcrypt.hashSync('Ale2007', 12),
+    role: 'admin'
   });
 
   save();
 }
 
-const appPage=(title,body,user)=>`<!doctype html>
+/* Asegurar estructura de la base de datos */
+
+if (!db.settings) {
+  db.settings = {
+    site_name: 'Javier Proyect'
+  };
+}
+
+if (!db.settings.site_name) {
+  db.settings.site_name = 'Javier Proyect';
+}
+
+if (!Array.isArray(db.users)) {
+  db.users = [];
+}
+
+if (!Array.isArray(db.projects)) {
+  db.projects = [];
+}
+
+/* =========================
+   PÁGINA BASE
+========================= */
+
+const appPage = (title, body, user) => `
+<!doctype html>
 <html lang="es">
+
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+
 <title>${esc(title)} · ${esc(db.settings.site_name)}</title>
+
 <link rel="stylesheet" href="/style.css">
 </head>
+
 <body>
 
 <header>
-<a class="brand" href="/">${esc(db.settings.site_name)}</a>
+
+<a class="brand" href="/">
+${esc(db.settings.site_name)}
+</a>
 
 <nav>
+
 <a href="/">Inicio</a>
-${user?'<a href="/admin">Panel</a><a href="/logout">Salir</a>':'<a href="/login">Admin</a>'}
+
+${
+  user
+    ? '<a href="/admin">Panel</a><a href="/logout">Salir</a>'
+    : '<a href="/login">Admin</a>'
+}
+
 </nav>
 
 </header>
 
-<main>${body}</main>
+<main>
 
-<footer>${esc(db.settings.site_name)} · Proyectos Arduino</footer>
+${body}
+
+</main>
+
+<footer>
+${esc(db.settings.site_name)} · Proyectos Arduino
+</footer>
 
 </body>
-</html>`;
-
-app.use(express.urlencoded({
-  extended:true,
-  limit:'2mb'
-}));
-
-app.set('trust proxy',1);
-
-app.use(session({
-  secret:process.env.SESSION_SECRET||'clave-secreta-javier-2026',
-  resave:false,
-  saveUninitialized:false,
-  cookie:{
-    httpOnly:true,
-    sameSite:'lax',
-    secure:true
-  }
-}));
-
-app.use('/uploads',express.static(UPLOADS));
-app.use(express.static(path.join(ROOT,'public')));
-
-const storage=multer.diskStorage({
-  destination:(_,__,cb)=>cb(null,UPLOADS),
-
-  filename:(_,f,cb)=>cb(
-    null,
-    Date.now()+'-'+f.originalname.replace(/[^a-zA-Z0-9._-]/g,'_')
-  )
-});
-
-const upload=multer({
-  storage,
-  limits:{
-    fileSize:8*1024*1024
-  }
-});
-
-function auth(req,res,next){
-  if(req.session.user)return next();
-
-  res.redirect('/login');
-}
-
-function isAdmin(req,res,next){
-  if(req.session.user?.role==='admin'){
-    return next();
-  }
-
-  res.status(403).send(
-    appPage(
-      '403',
-      '<div class="card"><h1>Acceso denegado</h1></div>',
-      req.session.user
-    )
-  );
-}
-
+</html>
+`;
 
 /* =========================
-   PÁGINA PRINCIPAL
+   MIDDLEWARE
 ========================= */
 
-app.get('/',(req,res)=>{
+app.use(
+  express.urlencoded({
+    extended: true,
+    limit: '2mb'
+  })
+);
 
-  const q=(req.query.q||'').toLowerCase();
+app.set('trust proxy', 1);
 
-  const ps=db.projects.filter(p=>
-    !q ||
-    p.title.toLowerCase().includes(q) ||
-    p.description.toLowerCase().includes(q)
+app.use(
+  session({
+    secret:
+      process.env.SESSION_SECRET ||
+      'clave-secreta-javier-2026',
+
+    resave: false,
+
+    saveUninitialized: false,
+
+    cookie: {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: true
+    }
+  })
+);
+
+app.use(
+  '/uploads',
+  express.static(UPLOADS)
+);
+
+app.use(
+  express.static(
+    path.join(ROOT, 'public')
+  )
+);
+
+/* =========================
+   SUBIDA DE ARCHIVOS
+========================= */
+
+const storage = multer.diskStorage({
+
+  destination: (req, file, cb) => {
+    cb(null, UPLOADS);
+  },
+
+  filename: (req, file, cb) => {
+
+    const safeName = file.originalname
+      .replace(/[^a-zA-Z0-9._-]/g, '_');
+
+    cb(
+      null,
+      Date.now() + '-' + safeName
+    );
+  }
+
+});
+
+const upload = multer({
+
+  storage,
+
+  limits: {
+    fileSize: 8 * 1024 * 1024
+  }
+
+});
+
+/* =========================
+   AUTENTICACIÓN
+========================= */
+
+function auth(req, res, next) {
+
+  if (!req.session.user) {
+    return res.redirect('/login');
+  }
+
+  /*
+    Actualizamos los datos del usuario
+    desde data.json en cada petición.
+
+    Esto permite que si un Admin cambia
+    Editor -> Admin, el cambio se aplique.
+  */
+
+  const user = db.users.find(
+    u => u.id === req.session.user.id
   );
 
-  const cards=ps.map(p=>`
-    <article class="project">
+  if (!user) {
 
-      ${
-        p.image
-        ? `<img src="/uploads/${esc(p.image)}" alt="">`
-        : '<div class="placeholder">ARDUINO</div>'
-      }
+    return req.session.destroy(() => {
+      res.redirect('/login');
+    });
 
-      <div class="pad">
+  }
 
-        <h2>${esc(p.title)}</h2>
+  req.session.user = {
+    id: user.id,
+    username: user.username,
+    role: user.role
+  };
 
-        <p>${esc(p.description).slice(0,180)}</p>
+  next();
+}
 
-        <a class="btn" href="/project/${p.id}">
-          Ver proyecto →
-        </a>
+function isAdmin(req, res, next) {
 
+  auth(req, res, () => {
+
+    if (req.session.user.role !== 'admin') {
+
+      return res.status(403).send(
+        appPage(
+          '403',
+          `
+          <div class="card">
+            <h1>Acceso denegado</h1>
+            <p>No tienes permisos de administrador.</p>
+            <a class="btn" href="/admin">
+              Volver al panel
+            </a>
+          </div>
+          `,
+          req.session.user
+        )
+      );
+
+    }
+
+    next();
+
+  });
+
+}
+
+/* =========================
+   INICIO
+========================= */
+
+app.get('/', (req, res) => {
+
+  const q = (req.query.q || '')
+    .toLowerCase()
+    .trim();
+
+  const ps = db.projects.filter(p => {
+
+    const title =
+      (p.title || '').toLowerCase();
+
+    const description =
+      (p.description || '').toLowerCase();
+
+    return (
+      !q ||
+      title.includes(q) ||
+      description.includes(q)
+    );
+
+  });
+
+  const cards = ps.map(p => `
+
+<article class="project">
+
+${
+  p.image
+    ? `
+      <img
+        src="/uploads/${esc(p.image)}"
+        alt="${esc(p.title)}"
+      >
+      `
+    : `
+      <div class="placeholder">
+        ARDUINO
       </div>
+      `
+}
 
-    </article>
-  `).join('');
+<div class="pad">
+
+<h2>${esc(p.title)}</h2>
+
+<p>
+${esc(p.description).slice(0, 180)}
+</p>
+
+<a
+  class="btn"
+  href="/project/${p.id}"
+>
+Ver proyecto →
+</a>
+
+</div>
+
+</article>
+
+`).join('');
 
   res.send(
+
     appPage(
       'Inicio',
 
       `
-      <section class="hero">
 
-        <span class="tag">
-          REPOSITORIO ARDUINO
-        </span>
+<section class="hero">
 
-        <h1>
-          Aprende, crea y comparte proyectos.
-        </h1>
+<span class="tag">
+REPOSITORIO ARDUINO
+</span>
 
-        <p>
-          Diagramas, códigos, materiales y proyectos en un solo lugar.
-        </p>
+<h1>
+Aprende, crea y comparte proyectos.
+</h1>
 
-        <form class="search">
+<p>
+Diagramas, códigos, materiales y proyectos
+en un solo lugar.
+</p>
 
-          <input
-            name="q"
-            value="${esc(req.query.q||'')}"
-            placeholder="Buscar proyectos..."
-          >
+<form
+  class="search"
+  method="get"
+  action="/"
+>
 
-          <button>
-            Buscar
-          </button>
+<input
+  name="q"
+  value="${esc(req.query.q || '')}"
+  placeholder="Buscar proyectos..."
+>
 
-        </form>
+<button>
+Buscar
+</button>
 
-      </section>
+</form>
 
-      <section>
+</section>
 
-        <div class="sectionhead">
 
-          <h2>
-            Proyectos publicados
-          </h2>
+<section>
 
-          <span>
-            ${ps.length} resultado(s)
-          </span>
+<div class="sectionhead">
 
-        </div>
+<h2>
+Proyectos publicados
+</h2>
 
-        <div class="grid">
+<span>
+${ps.length} resultado(s)
+</span>
 
-          ${
-            cards ||
-            `
-            <div class="card">
-              <h3>Aún no hay proyectos</h3>
-              <p>
-                Publica el primero desde el panel.
-              </p>
-            </div>
-            `
-          }
+</div>
 
-        </div>
 
-      </section>
-      `,
+<div class="grid">
+
+${
+  cards ||
+  `
+  <div class="card">
+    <h3>Aún no hay proyectos</h3>
+    <p>
+      Publica el primero desde el panel.
+    </p>
+  </div>
+  `
+}
+
+</div>
+
+</section>
+
+`,
 
       req.session.user
     )
-  );
-});
 
+  );
+
+});
 
 /* =========================
    VER PROYECTO
 ========================= */
 
-app.get('/project/:id',(req,res)=>{
+app.get('/project/:id', (req, res) => {
 
-  const p=db.projects.find(
-    x=>x.id===Number(req.params.id)
+  const p = db.projects.find(
+    x => x.id === Number(req.params.id)
   );
 
-  if(!p){
+  if (!p) {
 
     return res.status(404).send(
+
       appPage(
         'No encontrado',
+
         `
         <div class="card">
           <h1>Proyecto no encontrado</h1>
+          <a class="btn" href="/">
+            Volver al inicio
+          </a>
         </div>
         `
       )
+
     );
 
   }
 
   res.send(
+
     appPage(
+
       p.title,
 
       `
-      <article class="detail">
 
-        <a href="/">
-          ← Volver
-        </a>
+<article class="detail">
 
-        <h1>
-          ${esc(p.title)}
-        </h1>
+<a href="/">
+← Volver
+</a>
 
-        <p class="lead">
-          ${esc(p.description)}
-        </p>
+<h1>
+${esc(p.title)}
+</h1>
 
-        ${
-          p.image
-          ? `
-          <img
-            class="detailimg"
-            src="/uploads/${esc(p.image)}"
-            alt=""
-          >
-          `
-          : ''
-        }
+<p class="lead">
+${esc(p.description || '')}
+</p>
 
-        ${
-          p.materials
-          ? `
-          <section class="box">
 
-            <h2>
-              🧰 Materiales
-            </h2>
+${
+  p.image
+    ? `
+      <img
+        class="detailimg"
+        src="/uploads/${esc(p.image)}"
+        alt="${esc(p.title)}"
+      >
+      `
+    : ''
+}
 
-            <pre>
+
+${
+  p.materials
+    ? `
+      <section class="box">
+
+      <h2>
+      🧰 Materiales
+      </h2>
+
+      <pre>
 ${esc(p.materials)}
-            </pre>
+      </pre>
 
-          </section>
-          `
-          : ''
-        }
+      </section>
+      `
+    : ''
+}
 
-        ${
-          p.diagram
-          ? `
-          <section class="box">
 
-            <h2>
-              🔌 Diagrama
-            </h2>
+${
+  p.diagram
+    ? `
+      <section class="box">
 
-            <img
-              class="diagram"
-              src="/uploads/${esc(p.diagram)}"
-            >
+      <h2>
+      🔌 Diagrama
+      </h2>
 
-          </section>
-          `
-          : ''
-        }
+      <img
+        class="diagram"
+        src="/uploads/${esc(p.diagram)}"
+      >
 
-        ${
-          p.code
-          ? `
-          <section class="box">
+      </section>
+      `
+    : ''
+}
 
-            <h2>
-              💻 Código Arduino
-            </h2>
 
-            <pre class="code">
+${
+  p.code
+    ? `
+      <section class="box">
+
+      <h2>
+      💻 Código Arduino
+      </h2>
+
+      <pre class="code">
 ${esc(p.code)}
-            </pre>
+      </pre>
 
-          </section>
-          `
-          : ''
-        }
+      </section>
+      `
+    : ''
+}
 
-        ${
-          p.file
-          ? `
-          <p>
 
-            <a
-              class="btn"
-              href="/uploads/${esc(p.file)}"
-            >
-              Descargar archivo
-            </a>
+${
+  p.file
+    ? `
+      <p>
 
-          </p>
-          `
-          : ''
-        }
+      <a
+        class="btn"
+        href="/uploads/${esc(p.file)}"
+        download
+      >
+      Descargar archivo
+      </a>
 
-      </article>
-      `,
+      </p>
+      `
+    : ''
+}
+
+</article>
+
+`,
 
       req.session.user
     )
-  );
-});
 
+  );
+
+});
 
 /* =========================
    LOGIN
 ========================= */
 
-app.get('/login',(req,res)=>
+app.get('/login', (req, res) => {
+
   res.send(
+
     appPage(
+
       'Administración',
 
       `
-      <div class="auth card">
 
-        <h1>
-          Panel de administración
-        </h1>
+<div class="auth card">
 
-        <form method="post" action="/login">
+<h1>
+Panel de administración
+</h1>
 
-          <label>
-            Usuario
+<form
+  method="post"
+  action="/login"
+>
 
-            <input
-              name="username"
-              required
-            >
+<label>
 
-          </label>
+Usuario
 
-          <label>
-            Contraseña
+<input
+  name="username"
+  required
+>
 
-            <input
-              type="password"
-              name="password"
-              required
-            >
+</label>
 
-          </label>
 
-          <button>
-            Entrar
-          </button>
+<label>
 
-        </form>
+Contraseña
 
-      </div>
-      `
+<input
+  type="password"
+  name="password"
+  required
+>
+
+</label>
+
+
+<button>
+Entrar
+</button>
+
+</form>
+
+</div>
+
+`
+
     )
-  )
-);
 
-app.post('/login',(req,res)=>{
-
-  const u=db.users.find(
-    x=>x.username===req.body.username
   );
 
-  if(
+});
+
+
+app.post('/login', (req, res) => {
+
+  const username =
+    (req.body.username || '').trim();
+
+  const password =
+    req.body.password || '';
+
+  const u = db.users.find(
+    x => x.username === username
+  );
+
+  if (
     !u ||
     !bcrypt.compareSync(
-      req.body.password,
+      password,
       u.password
     )
-  ){
+  ) {
 
     return res.status(401).send(
+
       appPage(
+
         'Error',
 
         `
         <div class="card">
 
           <h1>
-            Datos incorrectos
+          Datos incorrectos
           </h1>
 
-          <a href="/login">
-            Intentar de nuevo
+          <a
+            class="btn"
+            href="/login"
+          >
+          Intentar de nuevo
           </a>
 
         </div>
         `
+
       )
+
     );
 
   }
 
-  req.session.user={
-    id:u.id,
-    username:u.username,
-    role:u.role
+  req.session.user = {
+
+    id: u.id,
+
+    username: u.username,
+
+    role: u.role
+
   };
 
   res.redirect('/admin');
-});
 
-app.get('/logout',(req,res)=>
-  req.session.destroy(()=>res.redirect('/'))
-);
+});
 
 
 /* =========================
-   PANEL
+   LOGOUT
 ========================= */
 
-app.get('/admin',auth,(req,res)=>{
+app.get('/logout', (req, res) => {
 
-  const rows=db.projects.map(p=>`
+  req.session.destroy(() => {
 
-    <tr>
+    res.redirect('/');
 
-      <td>
-        ${esc(p.title)}
-      </td>
+  });
 
-      <td>
-        <a href="/project/${p.id}">
-          Ver
-        </a>
-      </td>
+});
 
-      <td>
 
-        ${
-          req.session.user.role==='admin'
+/* =========================
+   PANEL ADMIN
+========================= */
 
-          ? `
-          <form
-            method="post"
-            action="/admin/delete/${p.id}"
-            onsubmit="return confirm('¿Eliminar proyecto?')"
-          >
+app.get('/admin', auth, (req, res) => {
 
-            <button class="danger">
-              Eliminar
-            </button>
+  const isAdminUser =
+    req.session.user.role === 'admin';
 
-          </form>
-          `
 
-          : '—'
-        }
+  const rows = db.projects.map(p => `
 
-      </td>
+<tr>
 
-    </tr>
+<td>
+${esc(p.title)}
+</td>
 
-  `).join('');
+<td>
+
+<a
+  href="/project/${p.id}"
+>
+Ver
+</a>
+
+</td>
+
+
+<td>
+
+${
+  isAdminUser
+    ? `
+      <form
+        method="post"
+        action="/admin/delete/${p.id}"
+        onsubmit="return confirm('¿Eliminar proyecto?')"
+      >
+
+      <button class="danger">
+      Eliminar
+      </button>
+
+      </form>
+      `
+    : ''
+}
+
+</td>
+
+</tr>
+
+`).join('');
+
 
   res.send(
+
     appPage(
+
       'Panel',
 
       `
 
-      <span class="tag">
-        ADMINISTRACIÓN
-      </span>
+<span class="tag">
+ADMINISTRACIÓN
+</span>
 
-      <h1>
-        Panel de ${esc(req.session.user.username)}
-      </h1>
+<h1>
+Panel de ${esc(req.session.user.username)}
+</h1>
 
-      <div class="adminnav">
 
-        <a
-          class="btn"
-          href="/admin/new"
-        >
-          + Nuevo proyecto
-        </a>
+<div class="adminnav">
 
-        <a
-          class="btn secondary"
-          href="/admin/account"
-        >
-          Mi cuenta
-        </a>
+<a
+  class="btn"
+  href="/admin/new"
+>
++ Nuevo proyecto
+</a>
 
-        ${
-          req.session.user.role==='admin'
 
-          ? `
-          <a
-            class="btn secondary"
-            href="/admin/users"
-          >
-            Usuarios
-          </a>
+<a
+  class="btn secondary"
+  href="/admin/account"
+>
+Mi cuenta
+</a>
 
-          <a
-            class="btn secondary"
-            href="/admin/settings"
-          >
-            Cambiar nombre
-          </a>
-          `
 
-          : ''
-        }
+${
+  isAdminUser
+    ? `
+      <a
+        class="btn secondary"
+        href="/admin/users"
+      >
+      Usuarios
+      </a>
 
-      </div>
+      <a
+        class="btn secondary"
+        href="/admin/settings"
+      >
+      Cambiar nombre
+      </a>
+      `
+    : ''
+}
 
-      <div class="card">
+</div>
 
-        <h2>
-          Proyectos
-        </h2>
 
-        <table>
+<div class="card">
 
-          <tr>
+<h2>
+Proyectos
+</h2>
 
-            <th>
-              Proyecto
-            </th>
+<table>
 
-            <th></th>
+<tr>
 
-            <th></th>
+<th>
+Proyecto
+</th>
 
-          </tr>
+<th>
+</th>
 
-          ${
-            rows ||
-            `
-            <tr>
-              <td colspan="3">
-                Sin proyectos
-              </td>
-            </tr>
-            `
-          }
+<th>
+</th>
 
-        </table>
+</tr>
 
-      </div>
+${
+  rows ||
+  `
+  <tr>
+    <td colspan="3">
+      Sin proyectos
+    </td>
+  </tr>
+  `
+}
 
-      `,
+</table>
+
+</div>
+
+`,
 
       req.session.user
     )
+
   );
+
 });
+
+
+/* =========================
+   FORMULARIO NUEVO PROYECTO
+========================= */
+
+const form = () => `
+
+<div class="card">
+
+<h1>
+Nuevo proyecto
+</h1>
+
+
+<form
+  method="post"
+  enctype="multipart/form-data"
+>
+
+
+<label>
+
+Nombre
+
+<input
+  name="title"
+  required
+>
+
+</label>
+
+
+<label>
+
+Descripción
+
+<textarea
+  name="description"
+></textarea>
+
+</label>
+
+
+<label>
+
+Materiales
+
+<textarea
+  name="materials"
+></textarea>
+
+</label>
+
+
+<label>
+
+Código Arduino
+
+<textarea
+  name="code"
+  class="codeinput"
+></textarea>
+
+</label>
+
+
+<label>
+
+Imagen
+
+<input
+  type="file"
+  name="image"
+  accept="image/*"
+>
+
+</label>
+
+
+<label>
+
+Diagrama
+
+<input
+  type="file"
+  name="diagram"
+  accept="image/*"
+>
+
+</label>
+
+
+<label>
+
+Archivo .ino
+
+<input
+  type="file"
+  name="file"
+  accept=".ino,.txt"
+>
+
+</label>
+
+
+<button>
+Publicar proyecto
+</button>
+
+
+</form>
+
+</div>
+
+`;
 
 
 /* =========================
    NUEVO PROYECTO
 ========================= */
 
-const form=()=>`
+app.get('/admin/new', auth, (req, res) => {
 
-<div class="card">
-
-  <h1>
-    Nuevo proyecto
-  </h1>
-
-  <form
-    method="post"
-    enctype="multipart/form-data"
-  >
-
-    <label>
-      Nombre
-
-      <input
-        name="title"
-        required
-      >
-    </label>
-
-    <label>
-      Descripción
-
-      <textarea
-        name="description"
-      ></textarea>
-    </label>
-
-    <label>
-      Materiales
-
-      <textarea
-        name="materials"
-      ></textarea>
-    </label>
-
-    <label>
-      Código Arduino
-
-      <textarea
-        name="code"
-        class="codeinput"
-      ></textarea>
-    </label>
-
-    <label>
-      Imagen
-
-      <input
-        type="file"
-        name="image"
-        accept="image/*"
-      >
-    </label>
-
-    <label>
-      Diagrama
-
-      <input
-        type="file"
-        name="diagram"
-        accept="image/*"
-      >
-    </label>
-
-    <label>
-      Archivo .ino
-
-      <input
-        type="file"
-        name="file"
-        accept=".ino,.txt"
-      >
-    </label>
-
-    <button>
-      Publicar proyecto
-    </button>
-
-  </form>
-
-</div>
-
-`;
-
-app.get('/admin/new',auth,(req,res)=>
   res.send(
+
     appPage(
       'Nuevo',
       form(),
       req.session.user
     )
-  )
-);
+
+  );
+
+});
+
 
 app.post(
   '/admin/new',
   auth,
   upload.fields([
     {
-      name:'image',
-      maxCount:1
+      name: 'image',
+      maxCount: 1
     },
     {
-      name:'diagram',
-      maxCount:1
+      name: 'diagram',
+      maxCount: 1
     },
     {
-      name:'file',
-      maxCount:1
+      name: 'file',
+      maxCount: 1
     }
   ]),
-  (req,res)=>{
+  (req, res) => {
 
-    const f=req.files||{};
+    try {
 
-    db.projects.push({
+      const f = req.files || {};
 
-      id:
+      const title =
+        (req.body.title || '').trim();
+
+      if (!title) {
+
+        return res.status(400).send(
+
+          appPage(
+            'Error',
+            `
+            <div class="card">
+              <h1>
+              El proyecto necesita un nombre.
+              </h1>
+
+              <a
+                class="btn"
+                href="/admin/new"
+              >
+              Volver
+              </a>
+            </div>
+            `,
+            req.session.user
+          )
+
+        );
+
+      }
+
+      const newId =
         db.projects.length
-        ? Math.max(...db.projects.map(x=>x.id))+1
-        : 1,
+          ? Math.max(
+              ...db.projects.map(x => x.id)
+            ) + 1
+          : 1;
 
-      title:req.body.title,
 
-      description:req.body.description||'',
+      db.projects.push({
 
-      materials:req.body.materials||'',
+        id: newId,
 
-      code:req.body.code||'',
+        title: title,
 
-      image:f.image?.[0]?.filename||'',
+        description:
+          req.body.description || '',
 
-      diagram:f.diagram?.[0]?.filename||'',
+        materials:
+          req.body.materials || '',
 
-      file:f.file?.[0]?.filename||''
+        code:
+          req.body.code || '',
 
-    });
+        image:
+          f.image?.[0]?.filename || '',
 
-    save();
+        diagram:
+          f.diagram?.[0]?.filename || '',
 
-    res.redirect('/admin');
+        file:
+          f.file?.[0]?.filename || ''
+
+      });
+
+
+      save();
+
+      res.redirect('/admin');
+
+    } catch (error) {
+
+      console.error(
+        'Error publicando proyecto:',
+        error
+      );
+
+      res.status(500).send(
+
+        appPage(
+          'Error',
+          `
+          <div class="card">
+
+            <h1>
+            Error al publicar
+            </h1>
+
+            <p>
+            No se pudo guardar el proyecto.
+            </p>
+
+            <a
+              class="btn"
+              href="/admin/new"
+            >
+            Volver
+            </a>
+
+          </div>
+          `,
+          req.session.user
+        )
+
+      );
+
+    }
 
   }
 );
@@ -791,11 +1166,15 @@ app.post(
 app.post(
   '/admin/delete/:id',
   isAdmin,
-  (req,res)=>{
+  (req, res) => {
 
-    db.projects=db.projects.filter(
-      p=>p.id!==Number(req.params.id)
-    );
+    const id =
+      Number(req.params.id);
+
+    db.projects =
+      db.projects.filter(
+        p => p.id !== id
+      );
 
     save();
 
@@ -809,233 +1188,366 @@ app.post(
    MI CUENTA
 ========================= */
 
-app.get('/admin/account',auth,(req,res)=>{
+app.get(
+  '/admin/account',
+  auth,
+  (req, res) => {
 
-  const u=db.users.find(
-    x=>x.id===req.session.user.id
-  );
+    const u = db.users.find(
+      x => x.id === req.session.user.id
+    );
 
-  res.send(
-    appPage(
-      'Mi cuenta',
+    if (!u) {
+      return res.redirect('/logout');
+    }
 
-      `
+    res.send(
 
-      <div class="card">
-
-        <h1>
-          Mi cuenta
-        </h1>
-
-        <form method="post">
-
-          <label>
-            Nuevo usuario
-
-            <input
-              name="username"
-              required
-              value="${esc(u.username)}"
-            >
-          </label>
-
-          <label>
-            Contraseña actual
-
-            <input
-              type="password"
-              name="current_password"
-              required
-            >
-          </label>
-
-          <label>
-            Nueva contraseña
-
-            <input
-              type="password"
-              name="new_password"
-              minlength="8"
-            >
-          </label>
-
-          <label>
-            Repetir nueva contraseña
-
-            <input
-              type="password"
-              name="confirm_password"
-              minlength="8"
-            >
-          </label>
-
-          <button>
-            Guardar cambios
-          </button>
-
-        </form>
-
-      </div>
-
-      `,
-
-      req.session.user
-    )
-  );
-
-});
-
-app.post('/admin/account',auth,(req,res)=>{
-
-  const u=db.users.find(
-    x=>x.id===req.session.user.id
-  );
-
-  const np=req.body.new_password||'';
-  const cp=req.body.confirm_password||'';
-  const un=(req.body.username||'').trim();
-
-  if(
-    !bcrypt.compareSync(
-      req.body.current_password||'',
-      u.password
-    )
-  ){
-
-    return res.status(400).send(
       appPage(
-        'Error',
+
+        'Mi cuenta',
+
         `
-        <div class="card">
-          <h1>
+
+<div class="card">
+
+<h1>
+Mi cuenta
+</h1>
+
+
+<form method="post">
+
+
+<label>
+
+Nuevo usuario
+
+<input
+  name="username"
+  required
+  value="${esc(u.username)}"
+>
+
+</label>
+
+
+<label>
+
+Contraseña actual
+
+<input
+  type="password"
+  name="current_password"
+  required
+>
+
+</label>
+
+
+<label>
+
+Nueva contraseña
+
+<input
+  type="password"
+  name="new_password"
+  minlength="8"
+>
+
+</label>
+
+
+<label>
+
+Repetir nueva contraseña
+
+<input
+  type="password"
+  name="confirm_password"
+  minlength="8"
+>
+
+</label>
+
+
+<button>
+Guardar cambios
+</button>
+
+
+</form>
+
+</div>
+
+`,
+
+        req.session.user
+
+      )
+
+    );
+
+  }
+);
+
+
+app.post(
+  '/admin/account',
+  auth,
+  (req, res) => {
+
+    const u = db.users.find(
+      x => x.id === req.session.user.id
+    );
+
+    if (!u) {
+      return res.redirect('/logout');
+    }
+
+
+    const currentPassword =
+      req.body.current_password || '';
+
+    const newPassword =
+      req.body.new_password || '';
+
+    const confirmPassword =
+      req.body.confirm_password || '';
+
+    const username =
+      (req.body.username || '').trim();
+
+
+    if (
+      !bcrypt.compareSync(
+        currentPassword,
+        u.password
+      )
+    ) {
+
+      return res.status(400).send(
+
+        appPage(
+          'Error',
+
+          `
+          <div class="card">
+
+            <h1>
             Contraseña actual incorrecta
-          </h1>
-        </div>
-        `,
-        req.session.user
+            </h1>
+
+            <a
+              class="btn"
+              href="/admin/account"
+            >
+            Volver
+            </a>
+
+          </div>
+          `,
+
+          req.session.user
+        )
+
+      );
+
+    }
+
+
+    if (
+      !username ||
+      db.users.some(
+        x =>
+          x.id !== u.id &&
+          x.username === username
       )
-    );
+    ) {
 
-  }
+      return res.status(400).send(
 
-  if(
-    !un ||
-    db.users.some(
-      x=>x.id!==u.id && x.username===un
-    )
-  ){
+        appPage(
+          'Error',
 
-    return res.status(400).send(
-      appPage(
-        'Error',
-        `
-        <div class="card">
-          <h1>
+          `
+          <div class="card">
+
+            <h1>
             Usuario inválido o ya existente.
-          </h1>
-        </div>
-        `,
-        req.session.user
-      )
-    );
+            </h1>
+
+            <a
+              class="btn"
+              href="/admin/account"
+            >
+            Volver
+            </a>
+
+          </div>
+          `,
+
+          req.session.user
+        )
+
+      );
+
+    }
+
+
+    if (
+      newPassword &&
+      newPassword.length < 8
+    ) {
+
+      return res.status(400).send(
+
+        appPage(
+          'Error',
+
+          `
+          <div class="card">
+
+            <h1>
+            La nueva contraseña debe tener
+            al menos 8 caracteres.
+            </h1>
+
+          </div>
+          `,
+
+          req.session.user
+        )
+
+      );
+
+    }
+
+
+    if (
+      newPassword !== confirmPassword
+    ) {
+
+      return res.status(400).send(
+
+        appPage(
+          'Error',
+
+          `
+          <div class="card">
+
+            <h1>
+            Las contraseñas nuevas no coinciden.
+            </h1>
+
+          </div>
+          `,
+
+          req.session.user
+        )
+
+      );
+
+    }
+
+
+    u.username = username;
+
+
+    if (newPassword) {
+
+      u.password =
+        bcrypt.hashSync(
+          newPassword,
+          12
+        );
+
+    }
+
+
+    save();
+
+
+    req.session.user.username =
+      username;
+
+
+    res.redirect('/admin');
 
   }
-
-  if(
-    (np && np.length<8) ||
-    np!==cp
-  ){
-
-    return res.status(400).send(
-      appPage(
-        'Error',
-        `
-        <div class="card">
-          <h1>
-            Revisa la nueva contraseña.
-          </h1>
-        </div>
-        `,
-        req.session.user
-      )
-    );
-
-  }
-
-  u.username=un;
-
-  if(np){
-    u.password=bcrypt.hashSync(np,12);
-  }
-
-  save();
-
-  req.session.user.username=un;
-
-  res.redirect('/admin');
-
-});
+);
 
 
 /* =========================
-   AJUSTES
+   CONFIGURACIÓN
    SOLO ADMIN
 ========================= */
 
 app.get(
   '/admin/settings',
   isAdmin,
-  (req,res)=>
+  (req, res) => {
 
     res.send(
+
       appPage(
+
         'Ajustes',
 
         `
 
-        <div class="card">
+<div class="card">
 
-          <h1>
-            Nombre de la página
-          </h1>
+<h1>
+Nombre de la página
+</h1>
 
-          <form method="post">
 
-            <label>
+<form method="post">
 
-              Nombre
+<label>
 
-              <input
-                name="site_name"
-                required
-                value="${esc(db.settings.site_name)}"
-              >
+Nombre
 
-            </label>
+<input
+  name="site_name"
+  required
+  value="${esc(db.settings.site_name)}"
+>
 
-            <button>
-              Guardar nombre
-            </button>
+</label>
 
-          </form>
 
-        </div>
+<button>
+Guardar nombre
+</button>
 
-        `,
+</form>
+
+</div>
+
+`,
 
         req.session.user
+
       )
-    )
+
+    );
+
+  }
 );
+
 
 app.post(
   '/admin/settings',
   isAdmin,
-  (req,res)=>{
+  (req, res) => {
 
-    db.settings.site_name=
-      (req.body.site_name||'Javier Proyect').trim()
-      ||'Javier Proyect';
+    const name =
+      (req.body.site_name || '').trim();
+
+    db.settings.site_name =
+      name || 'Javier Proyect';
 
     save();
 
@@ -1046,178 +1558,204 @@ app.post(
 
 
 /* =========================
-   USUARIOS
+   ADMINISTRAR USUARIOS
    SOLO ADMIN
 ========================= */
 
 app.get(
   '/admin/users',
   isAdmin,
-  (req,res)=>{
+  (req, res) => {
 
-    const rows=db.users.map(u=>`
+    const rows = db.users.map(u => `
 
-      <tr>
+<tr>
 
-        <td>
-          ${esc(u.username)}
-        </td>
+<td>
+${esc(u.username)}
+</td>
 
-        <td>
-          ${u.role}
-        </td>
 
-        <td>
+<td>
+${u.role === 'admin'
+  ? 'Administrador'
+  : 'Editor'}
+</td>
 
-          ${
-            u.id===req.session.user.id
 
-            ? 'Tú'
+<td>
 
-            : `
+${
+  u.id === req.session.user.id
 
-            <form
-              method="post"
-              action="/admin/users/role/${u.id}"
-              style="display:inline"
-            >
+  ? '<strong>Tú</strong>'
 
-              <select
-                name="role"
-                onchange="this.form.submit()"
-              >
+  : `
 
-                <option
-                  value="editor"
-                  ${u.role==='editor'?'selected':''}
-                >
-                  Editor
-                </option>
+<form
+  method="post"
+  action="/admin/users/role/${u.id}"
+  style="display:inline"
+>
 
-                <option
-                  value="admin"
-                  ${u.role==='admin'?'selected':''}
-                >
-                  Administrador
-                </option>
+<select
+  name="role"
+  onchange="this.form.submit()"
+>
 
-              </select>
+<option
+  value="editor"
+  ${u.role === 'editor' ? 'selected' : ''}
+>
+Editor
+</option>
 
-            </form>
 
-            <form
-              method="post"
-              action="/admin/users/delete/${u.id}"
-              style="display:inline"
-              onsubmit="return confirm('¿Eliminar?')"
-            >
+<option
+  value="admin"
+  ${u.role === 'admin' ? 'selected' : ''}
+>
+Administrador
+</option>
 
-              <button class="danger">
-                Eliminar
-              </button>
+</select>
 
-            </form>
+</form>
 
-            `
-          }
 
-        </td>
+<form
+  method="post"
+  action="/admin/users/delete/${u.id}"
+  style="display:inline"
+  onsubmit="return confirm('¿Eliminar usuario?')"
+>
 
-      </tr>
+<button class="danger">
+Eliminar
+</button>
 
-    `).join('');
+</form>
+
+`
+}
+
+</td>
+
+</tr>
+
+`).join('');
+
 
     res.send(
+
       appPage(
+
         'Usuarios',
 
         `
 
-        <div class="card">
+<div class="card">
 
-          <h1>
-            Administrar usuarios
-          </h1>
+<h1>
+Administrar usuarios
+</h1>
 
-          <form method="post">
 
-            <label>
-              Usuario
+<form method="post">
 
-              <input
-                name="username"
-                required
-              >
-            </label>
 
-            <label>
-              Contraseña
+<label>
 
-              <input
-                type="password"
-                name="password"
-                minlength="8"
-                required
-              >
-            </label>
+Usuario
 
-            <label>
-              Rol
+<input
+  name="username"
+  required
+>
 
-              <select name="role">
+</label>
 
-                <option value="editor">
-                  Editor
-                </option>
 
-                <option value="admin">
-                  Administrador
-                </option>
+<label>
 
-              </select>
+Contraseña
 
-            </label>
+<input
+  type="password"
+  name="password"
+  minlength="8"
+  required
+>
 
-            <button>
-              Crear usuario
-            </button>
+</label>
 
-          </form>
 
-        </div>
+<label>
 
-        <div class="card">
+Rol
 
-          <h2>
-            Usuarios
-          </h2>
+<select name="role">
 
-          <table>
+<option value="editor">
+Editor
+</option>
 
-            <tr>
+<option value="admin">
+Administrador
+</option>
 
-              <th>
-                Usuario
-              </th>
+</select>
 
-              <th>
-                Rol
-              </th>
+</label>
 
-              <th></th>
 
-            </tr>
+<button>
+Crear usuario
+</button>
 
-            ${rows}
 
-          </table>
+</form>
 
-        </div>
+</div>
 
-        `,
+
+<div class="card">
+
+<h2>
+Usuarios
+</h2>
+
+
+<table>
+
+<tr>
+
+<th>
+Usuario
+</th>
+
+<th>
+Rol
+</th>
+
+<th>
+Acciones
+</th>
+
+</tr>
+
+${rows}
+
+</table>
+
+</div>
+
+`,
 
         req.session.user
+
       )
+
     );
 
   }
@@ -1231,101 +1769,10 @@ app.get(
 app.post(
   '/admin/users',
   isAdmin,
-  (req,res)=>{
+  (req, res) => {
 
-    if(
-      db.users.some(
-        x=>x.username===req.body.username
-      )
-    ){
+    const username =
+      (req.body.username || '').trim();
 
-      return res.status(400).send(
-        appPage(
-          'Error',
-
-          `
-          <div class="card">
-
-            <h1>
-              Ese usuario ya existe.
-            </h1>
-
-          </div>
-          `,
-
-          req.session.user
-        )
-      );
-
-    }
-
-    db.users.push({
-
-      id:
-        db.users.length
-        ? Math.max(...db.users.map(x=>x.id))+1
-        : 1,
-
-      username:req.body.username,
-
-      password:bcrypt.hashSync(
-        req.body.password,
-        12
-      ),
-
-      role:
-        req.body.role==='admin'
-        ? 'admin'
-        : 'editor'
-
-    });
-
-    save();
-
-    res.redirect('/admin/users');
-
-  }
-);
-
-
-/* =========================
-   CAMBIAR ROL
-   SOLO ADMIN
-========================= */
-
-app.post(
-  '/admin/users/role/:id',
-  isAdmin,
-  (req,res)=>{
-
-    const u=db.users.find(
-      x=>x.id===Number(req.params.id)
-    );
-
-    if(!u){
-
-      return res.status(404).send(
-        appPage(
-          'Error',
-
-          `
-          <div class="card">
-
-            <h1>
-              Usuario no encontrado.
-            </h1>
-
-          </div>
-          `,
-
-          req.session.user
-        )
-      );
-
-    }
-
-    if(
-      u.id===req.session.user.id
-    ){
-
-      return res.status(400).send(
+    const password =
+      req.bo
